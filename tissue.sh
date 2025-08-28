@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tissue.sh - Full Web Recon & Vulnerability Scanner
+# tissue.sh - Full Web Recon & Vulnerability Scanner (No Subdomain Enumeration)
 # Usage: ./tissue.sh -f urls.txt
-# Requirements: amass, assetfinder, httpx, gau, katana, ffuf, nuclei, dalfox, nmap, waybackurls
+# Requirements: httpx, gau, katana, ffuf, nuclei, dalfox, nmap, waybackurls
 
 INPUT=""
 OUTDIR="tissue_output"
@@ -35,27 +35,14 @@ URLS_CLEAN="$OUTDIR/urls_clean.txt"
 grep -Eo 'https?://[^ ]+' "$INPUT" | sort -u > "$URLS_CLEAN"
 
 # ----------------------------
-# 2. Subdomain Enumeration
-# ----------------------------
-log "[*] Enumerating subdomains..."
-SUBDOMS="$OUTDIR/subdomains.txt"
-if command -v amass >/dev/null; then
-  amass enum -passive -df "$URLS_CLEAN" -o "$SUBDOMS" || true
-fi
-if command -v assetfinder >/dev/null; then
-  assetfinder --subs-only $(awk -F/ '{print $3}' "$URLS_CLEAN") >> "$SUBDOMS" || true
-fi
-sort -u "$SUBDOMS" -o "$SUBDOMS"
-
-# ----------------------------
-# 3. Live Host Checking
+# 2. Live Host Checking
 # ----------------------------
 log "[*] Checking live hosts..."
 LIVE="$OUTDIR/live_hosts.txt"
-cat "$URLS_CLEAN" "$SUBDOMS" | sort -u | httpx -silent -threads "$THREADS" > "$LIVE"
+cat "$URLS_CLEAN" | httpx -silent -threads "$THREADS" > "$LIVE"
 
 # ----------------------------
-# 4. Crawl URLs
+# 3. Crawl URLs
 # ----------------------------
 log "[*] Crawling endpoints..."
 CRAWLED="$OUTDIR/crawled_urls.txt"
@@ -68,14 +55,14 @@ fi
 sort -u "$CRAWLED" -o "$CRAWLED"
 
 # ----------------------------
-# 5. Parameter Discovery
+# 4. Parameter Discovery
 # ----------------------------
 log "[*] Finding parameters..."
 PARAMS="$OUTDIR/parameters.txt"
 grep "?" "$CRAWLED" | sort -u > "$PARAMS"
 
 # ----------------------------
-# 6. Vulnerability Scans
+# 5. Vulnerability Scans
 # ----------------------------
 VULNS_DIR="$OUTDIR/vulns"
 mkdir -p "$VULNS_DIR"
@@ -119,7 +106,7 @@ done
 wait
 
 # ----------------------------
-# 7. Nmap Scan for Misconfigured Ports
+# 6. Nmap Scan for Misconfigured Ports
 # ----------------------------
 if command -v nmap >/dev/null; then
   log "[*] Running Nmap scan for open/misconfigured ports..."
@@ -134,11 +121,10 @@ if command -v nmap >/dev/null; then
 fi
 
 # ----------------------------
-# 8. Output Summary
+# 7. Output Summary
 # ----------------------------
 log "[+] Scan complete. Results saved in: $OUTDIR"
 log "    - Live Hosts: $LIVE"
-log "    - Subdomains: $SUBDOMS"
 log "    - Crawled URLs: $CRAWLED"
 log "    - Parameters: $PARAMS"
 log "    - Vulnerabilities: $VULNS_DIR"
