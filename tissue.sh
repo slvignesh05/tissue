@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# tissue.sh - Web Recon & Vulnerability Scanner
-# Usage: ./tissue.sh -f urls.txt
+# tissue.sh - Web Recon & Vulnerability Scanner (No Subdomain Enumeration)
+# Usage: ./tissue.sh -f urls.txt [-o output_dir]
 # Requirements: httpx, gau, katana, ffuf, nuclei, dalfox, nmap
 
 INPUT=""
 OUTDIR="tissue_output"
 THREADS=50
-TIMEOUT=15s
+TIMEOUT=10s
+FFUF_WORDLIST="/usr/share/seclists/Fuzzing/LFI/LFI-gracefulsecurity-linux.txt"
+
+log() { echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] $*"; }
 
 # ----------------------------
 # Parse arguments
@@ -28,10 +31,9 @@ if [[ -z "$INPUT" ]]; then
 fi
 
 mkdir -p "$OUTDIR"
-log() { echo "[$(date +'%Y-%m-%dT%H:%M:%S%z')] $*"; }
 
 # ----------------------------
-# 1. Clean and normalize input
+# 1. Clean input URLs
 # ----------------------------
 log "[*] Cleaning input list..."
 URLS_CLEAN="$OUTDIR/urls_clean.txt"
@@ -42,9 +44,7 @@ awk '{print $1}' "$INPUT" | sort -u > "$URLS_CLEAN"
 # ----------------------------
 log "[*] Checking live hosts..."
 LIVE="$OUTDIR/live_hosts.txt"
-if command -v httpx >/dev/null; then
-    cat "$URLS_CLEAN" | xargs -n1 -P"$THREADS" -I{} timeout $TIMEOUT httpx -silent -u {} >> "$LIVE" || true
-fi
+httpx -l "$URLS_CLEAN" -silent -threads "$THREADS" -timeout 10 -retries 1 > "$LIVE"
 
 # ----------------------------
 # 3. Crawl URLs
@@ -59,7 +59,7 @@ if command -v katana >/dev/null; then
 fi
 
 if command -v gau >/dev/null; then
-    xargs -a "$LIVE" -n1 -P"$THREADS" -I{} timeout $TIMEOUT gau {} >> "$CRAWLED" || true
+    xargs -a "$LIVE" -n1 -P"$THREADS" -I{} timeout $TIMEOUT gau {} 2>/dev/null >> "$CRAWLED" || true
 fi
 
 sort -u "$CRAWLED" -o "$CRAWLED"
@@ -86,16 +86,17 @@ if command -v nuclei >/dev/null; then
 fi
 
 # XSS Testing with Dalfox
-if command -v dalfox >/dev/null; then
+if command -v dalfox >/dev/null && [[ -s "$PARAMS" ]]; then
     log "[*] Testing XSS with Dalfox..."
     dalfox file "$PARAMS" -o "$VULNS_DIR/xss.txt" --silence || true
 fi
 
 # Path Traversal Fuzz
-if command -v ffuf >/dev/null; then
+if [[ -f "$FFUF_WORDLIST" ]]; then
     log "[*] Testing Path Traversal..."
-    ffuf -w /usr/share/seclists/Fuzzing/LFI/LFI-gracefulsecurity-linux.txt \
-        -u FUZZ -mc all -o "$VULNS_DIR/path_traversal.json" || true
+    ffuf -w "$FFUF_WORDLIST" -u FUZZ -mc all -o "$VULNS_DIR/path_traversal.json" || true
+else
+    log "[-] FFUF wordlist not found, skipping Path Traversal"
 fi
 
 # Cache Deception
@@ -116,22 +117,24 @@ done < "$LIVE"
 wait
 
 # ----------------------------
-# 6. Nmap Scan
+# 6. Nmap Scan (limited parallelism)
 # ----------------------------
 if command -v nmap >/dev/null; then
     log "[*] Running Nmap scan..."
     NMAP_RESULTS="$VULNS_DIR/nmap_results"
     mkdir -p "$NMAP_RESULTS"
-    while read -r url; do
-        host=$(echo "$url" | awk -F/ '{print $3}')
-        log "    Scanning host: $host"
-        nmap -Pn -T4 --top-ports 1000 -sV -sC "$host" -oN "$NMAP_RESULTS/${host}_nmap.txt" &
-    done < "$LIVE"
-    wait
+
+    xargs -a "$LIVE" -P10 -I{} bash -c '
+        host=$(echo {} | awk -F/ "{print \$3}")
+        if [[ -n "$host" ]]; then
+            log "[*] Scanning host: $host"
+            nmap -Pn -T4 --top-ports 1000 -sV -sC "$host" -oN "'"$NMAP_RESULTS"'/${host}_nmap.txt"
+        fi
+    '
 fi
 
 # ----------------------------
-# 7. Output Summary
+# 7. Summary
 # ----------------------------
 log "[+] Scan complete. Results saved in: $OUTDIR"
 log "    - Live Hosts: $LIVE"
