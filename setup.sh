@@ -41,7 +41,15 @@ go install github.com/hahwul/dalfox/v2@latest
 go install github.com/ffuf/ffuf@latest
 
 echo "[*] Installing Python dependencies..."
-pip3 install --upgrade pip
+echo "[*] Installing Python tools in a virtual environment..."
+python3 -m venv ~/tissue-venv
+source ~/tissue-venv/bin/activate
+pip install --upgrade pip
+deactivate
+
+echo "[*] To use Python-based tools, activate the virtualenv:"
+echo "source ~/tissue-venv/bin/activate"
+
 
 echo "[*] Installation complete!"
 echo "Run: source ~/.bashrc or source ~/.zshrc"
