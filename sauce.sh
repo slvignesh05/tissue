@@ -1,88 +1,64 @@
 #!/bin/bash
-# sauce.sh - Automate recon & scanning on URLs from a file
+
+# sauce.sh - Simple URL scanner
 # Usage: ./sauce.sh -f urls.txt
 
 set -euo pipefail
 
+INPUT_FILE=""
+OUTPUT_DIR="scan_results"
+WORDLIST="/usr/share/wordlists/dirb/common.txt"
+
+# Colors
+RED="\033[0;31m"
+GREEN="\033[0;32m"
+YELLOW="\033[1;33m"
+RESET="\033[0m"
+
 usage() {
-    echo "Usage: $0 -f <urls.txt>"
+    echo "Usage: $0 -f <file_with_urls>"
     exit 1
 }
 
-check_tools() {
-    tools=(gobuster gospider kr waybackurls crlfuzz nuclei wget)
-    for tool in "${tools[@]}"; do
-        if ! command -v "$tool" &>/dev/null; then
-            echo "[-] $tool not found. Please run setup_2.sh first."
-            exit 1
-        fi
-    done
-}
-
-get_wordlist() {
-    WORDLIST="/usr/share/wordlists/dirb/common.txt"
-    if [[ ! -f "$WORDLIST" ]]; then
-        echo "[*] Wordlist not found. Downloading..."
-        sudo mkdir -p /usr/share/wordlists/dirb
-        sudo wget -qO "$WORDLIST" https://raw.githubusercontent.com/v0re/dirb/master/wordlists/common.txt
-    fi
-    echo "$WORDLIST"
-}
-
-# --------- PARSE ARGS ---------
-URLS_FILE=""
-while getopts "f:" opt; do
+while getopts ":f:" opt; do
     case ${opt} in
-        f) URLS_FILE=$OPTARG ;;
-        *) usage ;;
+        f ) INPUT_FILE=$OPTARG ;;
+        * ) usage ;;
     esac
 done
 
-if [[ -z "$URLS_FILE" ]]; then
+if [[ -z "$INPUT_FILE" ]]; then
     usage
 fi
 
-if [[ ! -f "$URLS_FILE" ]]; then
-    echo "[-] File $URLS_FILE not found!"
-    exit 1
-fi
-
-# --------- MAIN ---------
-OUTPUT_DIR="scan_results"
 mkdir -p "$OUTPUT_DIR"
 
-check_tools
-WORDLIST=$(get_wordlist)
+echo -e "${GREEN}[*] Starting scans for URLs in $INPUT_FILE${RESET}"
 
-echo "[*] Starting scans for URLs in $URLS_FILE"
+while read -r URL; do
+    [[ -z "$URL" ]] && continue
+    echo -e "${YELLOW}[*] Scanning: $URL${RESET}"
+    URL_DIR="$OUTPUT_DIR/$URL"
+    mkdir -p "$URL_DIR"
 
-while read -r url; do
-    [[ -z "$url" ]] && continue
-    domain=$(echo "$url" | sed 's|https\?://||' | cut -d/ -f1)
-    echo "[*] Scanning: $url"
-    mkdir -p "$OUTPUT_DIR/$domain"
+    # 1. Basic HTTP check
+    echo "[*] Running httpx..." 
+    httpx -silent -status-code -title -tech-detect -no-color -o "$URL_DIR/httpx.txt" -u "$URL" || true
 
-    # GoBuster
-    gobuster dir -u "$url" -w "$WORDLIST" \
-        -o "$OUTPUT_DIR/$domain/gobuster.txt" || echo "[!] Gobuster failed for $url"
+    # 2. Directory bruteforce (ignore wildcard issues)
+    echo "[*] Running gobuster..."
+    gobuster dir -u "http://$URL" -w "$WORDLIST" -q -o "$URL_DIR/gobuster.txt" \
+        -k -b 301,302,403,404 || true
 
-    # GoSpider
-    gospider -s "$url" -o "$OUTPUT_DIR/$domain/gospider.txt" || echo "[!] GoSpider failed for $url"
+    # 3. Crawl site (ignore failures)
+    echo "[*] Running gosub..."
+    gosub -u "http://$URL" > "$URL_DIR/gosub.txt" 2>/dev/null || true
 
-    # KiteRunner
-    kr scan "$url" -w ~/go/bin/routes-large.kite \
-        -o "$OUTPUT_DIR/$domain/kiterunner.txt" || echo "[!] KiteRunner failed for $url"
+    # 4. CVE Scans
+    echo "[*] Running nuclei CVE scan..."
+    nuclei -u "$URL" -tags cve -o "$URL_DIR/nuclei.txt" -silent || true
 
-    # Waybackurls
-    echo "$url" | waybackurls > "$OUTPUT_DIR/$domain/waybackurls.txt" || echo "[!] Waybackurls failed for $url"
+    echo -e "${GREEN}[+] Completed: $URL${RESET}\n"
+done < "$INPUT_FILE"
 
-    # CRLFuzz
-    crlfuzz -u "$url" -o "$OUTPUT_DIR/$domain/crlfuzz.txt" || echo "[!] CRLFuzz failed for $url"
-
-    # Nuclei
-    nuclei -u "$url" -o "$OUTPUT_DIR/$domain/nuclei.txt" || echo "[!] Nuclei failed for $url"
-
-    echo "[+] Completed: $url"
-done < "$URLS_FILE"
-
-echo "[+] All scans completed. Results saved in $OUTPUT_DIR"
+echo -e "${GREEN}[+] All scans completed. Results saved in $OUTPUT_DIR${RESET}"
