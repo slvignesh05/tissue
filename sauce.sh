@@ -1,56 +1,75 @@
 #!/bin/bash
+# sauce.sh: Scan URLs for vulnerabilities with multiple tools
+# Saves ONLY findings in a single JSON file (scan_results/vulnerabilities.json)
 
-# sauce.sh - Recon & vuln scanning automation
-# Tools: httpx, gobuster, gospider, waybackurls, crlfuzz, nuclei
+INPUT_FILE=""
+OUTPUT_FILE="scan_results/vulnerabilities.json"
+WORDLIST="/usr/share/wordlists/dirb/common.txt" # Change if needed
 
-WORDLIST="common.txt"
-RESULTS_DIR="scan_results"
-URLS_FILE="urls.txt"
+while getopts "f:" opt; do
+  case ${opt} in
+    f ) INPUT_FILE=$OPTARG ;;
+    * ) echo "Usage: $0 -f <urls.txt>"; exit 1 ;;
+  esac
+done
 
-# Download wordlist if missing
-if [[ ! -f $WORDLIST ]]; then
-    echo "[*] Downloading wordlist..."
-    curl -s -o $WORDLIST https://raw.githubusercontent.com/v0re/dirb/master/wordlists/common.txt
+if [[ -z "$INPUT_FILE" || ! -f "$INPUT_FILE" ]]; then
+  echo "[-] Input file missing or not found!"
+  exit 1
 fi
 
-mkdir -p "$RESULTS_DIR"
+mkdir -p scan_results
+> "$OUTPUT_FILE"
+echo "[" > "$OUTPUT_FILE"
 
-if [[ ! -f $URLS_FILE ]]; then
-    echo "[!] No urls.txt found! Put your URLs inside urls.txt"
-    exit 1
-fi
+while read -r url; do
+  [[ -z "$url" ]] && continue
+  echo "[*] Scanning: $url"
 
-while read -r URL; do
-    [[ -z "$URL" ]] && continue
-    DOMAIN=$(echo $URL | sed 's~http[s]*://~~' | sed 's~/.*~~')
+  active_url=$(echo "$url" | httpx -silent -mc 200)
+  if [[ -z "$active_url" ]]; then
+    echo "[-] Skipping $url (not reachable)"
+    continue
+  fi
 
-    TARGET_DIR="$RESULTS_DIR/$DOMAIN"
-    mkdir -p "$TARGET_DIR"
+  json_entry="{\"url\":\"$url\""
+  findings=()
 
-    echo -e "\n[*] Checking $URL with httpx..."
-    ACTIVE=$(echo $URL | httpx -silent -mc 200)
-    if [[ -z "$ACTIVE" ]]; then
-        echo "[!] No active 200 URL found for $URL"
-        continue
-    fi
-    echo "[+] $URL is live!"
+  # === NUCLEI SCAN ===
+  nuclei_out=$(echo "$url" | nuclei -silent -tags cve -json 2>/dev/null)
+  if [[ -n "$nuclei_out" ]]; then
+    findings+=("\"nuclei\":[$(echo "$nuclei_out" | jq -c -s '.[]')]")
+  fi
 
-    echo "[*] Starting GoBuster..."
-    gobuster dir -u "$URL" -w "$WORDLIST" -t 10 -q -o "$TARGET_DIR/gobuster.txt" || echo "[!] Gobuster failed"
+  # === GOBUSTER ===
+  gobuster_out=$(gobuster dir -u "$url" -w "$WORDLIST" -q -o /dev/stdout 2>/dev/null)
+  if [[ -n "$gobuster_out" ]]; then
+    findings+=("\"gobuster\":[\"$(echo "$gobuster_out" | sed ':a;N;$!ba;s/\n/","/g')\"]")
+  fi
 
-    echo "[*] Starting GoSpider..."
-    gospider -s "$URL" -o "$TARGET_DIR/gospider" --quiet || echo "[!] GoSpider failed"
+  # === GOSPIDER ===
+  gospider_out=$(gospider -s "$url" -d 1 -q --json 2>/dev/null)
+  if [[ -n "$gospider_out" ]]; then
+    findings+=("\"gospider\":[\"$(echo "$gospider_out" | jq -r '.output' | sed ':a;N;$!ba;s/\n/","/g')\"]")
+  fi
 
-    echo "[*] Running Waybackurls..."
-    echo "$URL" | waybackurls > "$TARGET_DIR/waybackurls.txt"
+  # === CRLFUZZ ===
+  crlfuzz_out=$(crlfuzz -u "$url" -silent 2>/dev/null)
+  if [[ -n "$crlfuzz_out" ]]; then
+    findings+=("\"crlfuzz\":[\"$(echo "$crlfuzz_out" | sed ':a;N;$!ba;s/\n/","/g')\"]")
+  fi
 
-    echo "[*] Running CRLFuzz..."
-    crlfuzz -u "$URL" -o "$TARGET_DIR/crlfuzz.txt" || echo "[!] CRLFuzz failed"
+  if [[ ${#findings[@]} -gt 0 ]]; then
+    json_entry+=",${findings[*]}}"
+    echo "$json_entry," >> "$OUTPUT_FILE"
+    echo "[+] Findings logged for $url"
+  else
+    echo "[-] No issues found for $url"
+  fi
 
-    echo "[*] Running Nuclei..."
-    nuclei -u "$URL" -o "$TARGET_DIR/nuclei.txt"
+done < "$INPUT_FILE"
 
-    echo "[+] Completed: $URL"
-done < "$URLS_FILE"
+sed -i '$ s/,$//' "$OUTPUT_FILE"
+echo "]" >> "$OUTPUT_FILE"
 
-echo -e "\n[+] All scans completed! Results saved in $RESULTS_DIR/"
+echo "[+] All results saved in $OUTPUT_FILE"
