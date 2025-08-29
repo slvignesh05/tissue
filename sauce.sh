@@ -1,64 +1,56 @@
 #!/bin/bash
 
-# sauce.sh - Simple URL scanner
-# Usage: ./sauce.sh -f urls.txt
+# sauce.sh - Recon & vuln scanning automation
+# Tools: httpx, gobuster, gospider, waybackurls, crlfuzz, nuclei
 
-set -euo pipefail
+WORDLIST="common.txt"
+RESULTS_DIR="scan_results"
+URLS_FILE="urls.txt"
 
-INPUT_FILE=""
-OUTPUT_DIR="scan_results"
-WORDLIST="/usr/share/wordlists/dirb/common.txt"
-
-# Colors
-RED="\033[0;31m"
-GREEN="\033[0;32m"
-YELLOW="\033[1;33m"
-RESET="\033[0m"
-
-usage() {
-    echo "Usage: $0 -f <file_with_urls>"
-    exit 1
-}
-
-while getopts ":f:" opt; do
-    case ${opt} in
-        f ) INPUT_FILE=$OPTARG ;;
-        * ) usage ;;
-    esac
-done
-
-if [[ -z "$INPUT_FILE" ]]; then
-    usage
+# Download wordlist if missing
+if [[ ! -f $WORDLIST ]]; then
+    echo "[*] Downloading wordlist..."
+    curl -s -o $WORDLIST https://raw.githubusercontent.com/v0re/dirb/master/wordlists/common.txt
 fi
 
-mkdir -p "$OUTPUT_DIR"
+mkdir -p "$RESULTS_DIR"
 
-echo -e "${GREEN}[*] Starting scans for URLs in $INPUT_FILE${RESET}"
+if [[ ! -f $URLS_FILE ]]; then
+    echo "[!] No urls.txt found! Put your URLs inside urls.txt"
+    exit 1
+fi
 
 while read -r URL; do
     [[ -z "$URL" ]] && continue
-    echo -e "${YELLOW}[*] Scanning: $URL${RESET}"
-    URL_DIR="$OUTPUT_DIR/$URL"
-    mkdir -p "$URL_DIR"
+    DOMAIN=$(echo $URL | sed 's~http[s]*://~~' | sed 's~/.*~~')
 
-    # 1. Basic HTTP check
-    echo "[*] Running httpx..." 
-    httpx -silent -status-code -title -tech-detect -no-color -o "$URL_DIR/httpx.txt" -u "$URL" || true
+    TARGET_DIR="$RESULTS_DIR/$DOMAIN"
+    mkdir -p "$TARGET_DIR"
 
-    # 2. Directory bruteforce (ignore wildcard issues)
-    echo "[*] Running gobuster..."
-    gobuster dir -u "http://$URL" -w "$WORDLIST" -q -o "$URL_DIR/gobuster.txt" \
-        -k -b 301,302,403,404 || true
+    echo -e "\n[*] Checking $URL with httpx..."
+    ACTIVE=$(echo $URL | httpx -silent -mc 200)
+    if [[ -z "$ACTIVE" ]]; then
+        echo "[!] No active 200 URL found for $URL"
+        continue
+    fi
+    echo "[+] $URL is live!"
 
-    # 3. Crawl site (ignore failures)
-    echo "[*] Running gosub..."
-    gosub -u "http://$URL" > "$URL_DIR/gosub.txt" 2>/dev/null || true
+    echo "[*] Starting GoBuster..."
+    gobuster dir -u "$URL" -w "$WORDLIST" -t 10 -q -o "$TARGET_DIR/gobuster.txt" || echo "[!] Gobuster failed"
 
-    # 4. CVE Scans
-    echo "[*] Running nuclei CVE scan..."
-    nuclei -u "$URL" -tags cve -o "$URL_DIR/nuclei.txt" -silent || true
+    echo "[*] Starting GoSpider..."
+    gospider -s "$URL" -o "$TARGET_DIR/gospider" --quiet || echo "[!] GoSpider failed"
 
-    echo -e "${GREEN}[+] Completed: $URL${RESET}\n"
-done < "$INPUT_FILE"
+    echo "[*] Running Waybackurls..."
+    echo "$URL" | waybackurls > "$TARGET_DIR/waybackurls.txt"
 
-echo -e "${GREEN}[+] All scans completed. Results saved in $OUTPUT_DIR${RESET}"
+    echo "[*] Running CRLFuzz..."
+    crlfuzz -u "$URL" -o "$TARGET_DIR/crlfuzz.txt" || echo "[!] CRLFuzz failed"
+
+    echo "[*] Running Nuclei..."
+    nuclei -u "$URL" -o "$TARGET_DIR/nuclei.txt"
+
+    echo "[+] Completed: $URL"
+done < "$URLS_FILE"
+
+echo -e "\n[+] All scans completed! Results saved in $RESULTS_DIR/"
