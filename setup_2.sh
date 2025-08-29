@@ -20,7 +20,6 @@ install_tool() {
 
 install_tool "GoBuster" "github.com/OJ/gobuster/v3@latest" "gobuster"
 install_tool "GoSpider" "github.com/jaeles-project/gospider@latest" "gospider"
-install_tool "KiteRunner" "github.com/assetnote/kiterunner@latest" "kr"
 install_tool "Waybackurls" "github.com/tomnomnom/waybackurls@latest" "waybackurls"
 install_tool "CRLFuzz" "github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest" "crlfuzz"
 install_tool "Nuclei" "github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest" "nuclei"
